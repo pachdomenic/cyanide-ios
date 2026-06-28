@@ -57,7 +57,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Cyanide ${{ github.ref_name }}
-          files: build/cyanidex.ipa
+          files: build/cyanide.ipa
           generate_release_notes: true
           make_latest: true
           overwrite_files: true
