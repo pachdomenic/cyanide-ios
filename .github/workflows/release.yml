@@ -1,9 +1,7 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -11,6 +9,8 @@ permissions:
 jobs:
   release:
     runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout
@@ -23,31 +23,25 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      - name: Extract tag version
-        id: tag
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Build IPA with release script
-        run: VERSION="${{ steps.tag.outputs.version }}" ./scripts/release.sh
-
-      - name: Verify IPA exists
-        run: |
-          VERSION="${{ steps.tag.outputs.version }}"
-          VERSIONED_IPA="build/Cyanide-${VERSION}.ipa"
-          LINK_IPA="build/Cyanide.ipa"
-          if [ ! -f "$VERSIONED_IPA" ]; then
-            echo "error: $VERSIONED_IPA not found" >&2
-            exit 1
-          fi
-          if [ ! -f "$LINK_IPA" ]; then
-            echo "error: $LINK_IPA not found" >&2
-            exit 1
-          fi
-          ls -lh "$VERSIONED_IPA" "$LINK_IPA"
+      - name: Build IPA
+        run: ./scripts/build.sh
 
       - name: Prepare release asset
         run: |
-          cp build/Cyanide.ipa build/cyanidex.ipa
+          # Dynamically find the IPA file that build.sh generated
+          # This ignores branch/tag name mismatches
+          IPA_FILE=$(find build -type f -name "Cyanide*.ipa" | head -n 1)
+          
+          if [ -z "$IPA_FILE" ]; then
+            echo "error: No IPA found in build directory!" >&2
+            ls -la build/
+            exit 1
+          fi
+          
+          echo "Successfully found IPA: $IPA_FILE"
+          
+          # Copy it to the final asset name you want uploaded
+          cp "$IPA_FILE" build/cyanidex.ipa
           ls -lh build/cyanidex.ipa
 
       - name: Create GitHub Release
