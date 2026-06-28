@@ -2186,7 +2186,7 @@ BOOL settings_device_supported(void)
 
     BOOL ios26 =
         settings_compare_system_version(@"26.0") != NSOrderedAscending &&
-        settings_compare_system_version(@"26.0.1") != NSOrderedDescending;
+        settings_compare_system_version(@"26.1") != NSOrderedDescending;
 
     return ios17to18 || ios26;
 }
@@ -2194,7 +2194,7 @@ BOOL settings_device_supported(void)
 static NSString *settings_unsupported_message(void)
 {
     NSString *version = UIDevice.currentDevice.systemVersion ?: @"unknown";
-    return [NSString stringWithFormat:@"Not supported on iOS %@. Supported: iOS/iPadOS 17.0-18.7.1 or 26.0-26.0.1.", version];
+    return [NSString stringWithFormat:@"Not supported on iOS %@. Supported: iOS/iPadOS 17.0-18.7.1 or 26.0-26.1.", version];
 }
 
 static void settings_progress(NSUInteger *step, NSUInteger total, const char *message)
