@@ -76,6 +76,10 @@ static const bool kNBLDebugLogging = false;
 static const unsigned long long kNBLSlowLogMs = 100;
 static const uint64_t kNBLFullTraceTicks = 3;
 static const uint64_t kNBLTrafficPersistIntervalUS = 5000000ULL;
+// Remote AppleSmartBattery reads are expensive, so they are cached. Keep the
+// window at or below the live loop's slow-slot cadence (30s) or the temperature
+// slot would visibly lag behind its own refresh tick.
+static const time_t kNBLTempRemoteCacheSeconds = 30;
 
 #define NBL_DEBUG_LOG(fmt, ...) do { \
     if (kNBLDebugLogging) log_user(fmt, ##__VA_ARGS__); \
@@ -311,7 +315,7 @@ static double nbl_read_battery_temp_c(void)
     }
 
     time_t now = time(NULL);
-    if (lastRemoteRead != 0 && now >= lastRemoteRead && (now - lastRemoteRead) < 60) {
+    if (lastRemoteRead != 0 && now >= lastRemoteRead && (now - lastRemoteRead) < kNBLTempRemoteCacheSeconds) {
         unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
         if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
             NBL_DEBUG_LOG("[NICEBARLITE][TEMP] source=cache value=%.1fC local=%llums total=%llums\n",

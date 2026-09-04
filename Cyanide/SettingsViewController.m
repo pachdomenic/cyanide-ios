@@ -1167,6 +1167,10 @@ static const useconds_t kNSBarLiveBackgroundIntervalUS = 1000000;
 static const useconds_t kNiceBarLiteLiveIntervalUS = 500000;
 static const useconds_t kNiceBarLiteLiveBackgroundIntervalUS = 1000000;
 static const useconds_t kNiceBarLiteNetworkIntervalUS = 500000;
+// Cadence for slots no other mask covers — battery temp, thermal/throttle
+// state, RAM, battery %, uptime, free disk, custom text, weather. They change
+// slowly (and the sensor reads are comparatively expensive), so 30s.
+static const useconds_t kNiceBarLiteSlowIntervalUS = 30000000;
 static const NSUInteger kNiceBarLiteLiveMaxTicks = 43200;
 static const NSTimeInterval kNiceBarLiteWeatherRefreshInterval = 900.0;
 static const int64_t kLiveBackgroundTaskGraceSeconds = 10;
@@ -3077,6 +3081,34 @@ static uint32_t settings_nicebar_network_mask(NSUserDefaults *d)
     return mask;
 }
 
+// Every visible slot that no other cadence covers: battery temperature,
+// thermal/throttle state, free RAM, battery percent, uptime, free disk, plus
+// static custom-text and weather slots. Before this existed the live loop only
+// refreshed them in its "full apply" branch, which never runs while a seconds
+// clock or a network slot is configured, so a temp/throttle slot could sit on
+// its first reading forever.
+static uint32_t settings_nicebar_slow_mask(NSUserDefaults *d)
+{
+    uint32_t mask = 0;
+    for (NSInteger i = 0; i < NiceBarLiteSlotCount; i++) {
+        NSInteger kind = [d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotKindPrefix, i)];
+        if (kind == NiceBarLiteContentOff) continue;
+        // Time formats ride the seconds/clock masks.
+        if (kind == NiceBarLiteContentTimeFormat) continue;
+        if (kind == NiceBarLiteContentSystem) {
+            NSInteger item = [d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, i)];
+            // Dates ride the clock mask; speed/traffic/IP ride the network mask.
+            if (item == NiceBarLiteSystemDate ||
+                item == NiceBarLiteSystemLunarDate ||
+                item == NiceBarLiteSystemNetworkSpeed ||
+                item == NiceBarLiteSystemTodayTraffic ||
+                item == NiceBarLiteSystemCurrentIP) continue;
+        }
+        mask |= (1u << i);
+    }
+    return mask;
+}
+
 static uint32_t settings_nicebar_update_mask_for_key(NSString *key)
 {
     if (key.length == 0) return 0;
@@ -4270,15 +4302,18 @@ static void settings_start_nicebarlite_live_loop(void)
         time_t lastSecondTick = 0;
         time_t lastMinuteTick = 0;
         uint64_t lastNetworkTickUS = 0;
+        uint64_t lastSlowTickUS = 0;
         BOOL pausedForSleep = NO;
 
-        printf("[SETTINGS] NiceBar Lite live loop started interval=%uus background=%uus max=%lu\n",
+        printf("[SETTINGS] NiceBar Lite live loop started interval=%uus background=%uus slow=%uus max=%lu\n",
                kNiceBarLiteLiveIntervalUS,
                kNiceBarLiteLiveBackgroundIntervalUS,
+               kNiceBarLiteSlowIntervalUS,
                (unsigned long)kNiceBarLiteLiveMaxTicks);
-        log_user("[NICEBAR] Live loop started fg=%0.1fs bg=%0.1fs max=%lu\n",
+        log_user("[NICEBAR] Live loop started fg=%0.1fs bg=%0.1fs slow=%0.1fs max=%lu\n",
                  (double)kNiceBarLiteLiveIntervalUS / 1000000.0,
                  (double)kNiceBarLiteLiveBackgroundIntervalUS / 1000000.0,
+                 (double)kNiceBarLiteSlowIntervalUS / 1000000.0,
                  (unsigned long)kNiceBarLiteLiveMaxTicks);
         settings_log_nicebar_config(d, "live config");
 
@@ -4316,19 +4351,31 @@ static void settings_start_nicebarlite_live_loop(void)
                 uint32_t secondsMask = settings_nicebar_seconds_mask(d);
                 uint32_t clockMask = settings_nicebar_clock_mask(d);
                 uint32_t networkMask = settings_nicebar_network_mask(d);
+                uint32_t slowMask = settings_nicebar_slow_mask(d);
                 uint32_t updateMask = 0;
                 const char *updateReason = "none";
                 BOOL clockDue = (clockMask != 0 && nowMinute != lastMinuteTick);
+                BOOL slowDue = (slowMask != 0 &&
+                                (lastSlowTickUS == 0 ||
+                                 (nowForMaskUS >= lastSlowTickUS &&
+                                  nowForMaskUS - lastSlowTickUS >= (uint64_t)kNiceBarLiteSlowIntervalUS)));
 
                 if (secondsMask != 0 && nowSecond != lastSecondTick) {
-                    updateMask = secondsMask | (clockDue ? clockMask : 0);
-                    updateReason = clockDue ? "seconds+clock" : "seconds";
+                    updateMask = secondsMask | (clockDue ? clockMask : 0) | (slowDue ? slowMask : 0);
+                    updateReason = slowDue ? (clockDue ? "seconds+clock+slow" : "seconds+slow")
+                                           : (clockDue ? "seconds+clock" : "seconds");
                     lastSecondTick = nowSecond;
                     if (clockDue) lastMinuteTick = nowMinute;
+                    if (slowDue) lastSlowTickUS = nowForMaskUS;
                 } else if (clockDue) {
-                    updateMask = clockMask;
-                    updateReason = "clock";
+                    updateMask = clockMask | (slowDue ? slowMask : 0);
+                    updateReason = slowDue ? "clock+slow" : "clock";
                     lastMinuteTick = nowMinute;
+                    if (slowDue) lastSlowTickUS = nowForMaskUS;
+                } else if (slowDue) {
+                    updateMask = slowMask;
+                    updateReason = "slow";
+                    lastSlowTickUS = nowForMaskUS;
                 } else if (networkMask != 0 &&
                            (lastNetworkTickUS == 0 ||
                             (nowForMaskUS >= lastNetworkTickUS &&
@@ -4336,7 +4383,7 @@ static void settings_start_nicebarlite_live_loop(void)
                     updateMask = networkMask;
                     updateReason = "network";
                     lastNetworkTickUS = nowForMaskUS;
-                } else if (secondsMask == 0 && networkMask == 0) {
+                } else if (secondsMask == 0 && networkMask == 0 && slowMask == 0) {
                     updateMask = 0;
                     updateReason = "full";
                 } else {
@@ -4410,11 +4457,12 @@ static void settings_start_nicebarlite_live_loop(void)
                              (unsigned long long)(totalUS / 1000ULL),
                              (unsigned long long)(intervalUS / 1000ULL),
                              g_springboard_rc_ready ? "ready" : "down");
-                    log_user("[NICEBAR] Tick detail reason=%s mask=0x%x seconds=0x%x network=0x%x\n",
+                    log_user("[NICEBAR] Tick detail reason=%s mask=0x%x seconds=0x%x network=0x%x slow=0x%x\n",
                              updateReason,
                              updateMask,
                              secondsMask,
-                             networkMask);
+                             networkMask,
+                             slowMask);
                 }
                 if (nextTickUS != 0) {
                     intervalUS = settings_live_interval(kNiceBarLiteLiveIntervalUS,
